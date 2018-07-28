@@ -1,0 +1,184 @@
+---
+title: "CreditAssignment"
+author: "Mervyn Akash - codemonger"
+date: "31 May 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+set.seed(123)
+
+setwd("E:/Machine Learning/Classification/Datasets/")
+
+library(adabag)
+library(dplyr)
+library(caret)
+library(rpart)
+library(mice)
+library(class)
+library(e1071)
+library(randomForest)
+library(BBmisc)
+library(ggplot2)
+
+credit <- read.csv("credit-default.csv")
+str(credit)
+
+#credit$default <- factor(credit$default)
+
+inTrain = createDataPartition(credit$default, p = .75, list = F)
+
+credit.train = credit[sample(seq(1, nrow(credit)),(0.7*nrow(credit))),]
+credit.test = credit[sample(seq(1,nrow(credit)),(0.3*nrow(credit))),]
+```
+
+
+
+## Decision Tree 
+
+```{r}
+
+model_dt <- rpart(default~., data = credit.train, control = rpart.control(cp = 0), method = "class")
+#printcp(model_dt)
+#printcp(rpart(default~., credit.train, control = rpart.control(cp = 0),method = "class"))
+
+cpval = model_dt$cptable[names(which.min(model_dt$cptable[,"xerror"])),"CP"]
+
+model_dt_prune <- prune(model_dt, cp = cpval)
+
+pred_dt = predict(model_dt_prune, credit.test, type = "class")
+
+cm_dt = confusionMatrix(pred_dt,credit.test$default, positive = "2")
+
+sens_dt = cm_dt$byClass['Sensitivity']*100
+acc_dt = cm_dt$overall['Accuracy']*100
+
+```
+
+
+## Random Forest
+
+```{r}
+
+mtry1 = floor(sqrt(ncol(credit.train)))
+
+#model_rf = train(default~., data = credit.train, trControl = control,
+#                 tuneGrid = expand.grid(mtry = c(3,4,5,6)), method = "rf")
+
+acc = c()
+sens = c()
+for(i in c(mtry1-1,mtry1,mtry1+1,mtry1+2)){
+  model_rf = randomForest(as.factor(default)~., data = credit.train, mtry = i, ntree = 100)
+  rfpred = predict(model_rf, credit.test)
+  cm_rf = confusionMatrix(rfpred, credit.test$default, positive = "2")
+  
+  sens_rf = cm_rf$byClass['Sensitivity']*100
+  acc_rf = cm_rf$overall['Accuracy']*100
+  acc = c(acc,acc_rf)
+  sens = c(sens, sens_rf)
+}
+
+acc_rf = acc[which.max(acc)]
+sens_rf = sens[which.max(acc)]
+
+```
+
+## Naive-Bayes
+
+```{r}
+model_nb <- naiveBayes(default~., data = credit.train)
+#print(model_nb)
+
+nbpred = as.data.frame(predict(object = model_nb,newdata = credit.test, type = "raw"))
+nbpred = ifelse(nbpred$`1` > nbpred$`2`, 1, 2)
+cm_nb = confusionMatrix(nbpred, credit.test$default, positive = "2")
+
+sens_nb = cm_nb$byClass['Sensitivity']*100
+acc_nb = cm_nb$overall['Accuracy']*100
+
+```
+
+## AdaBoost
+
+```{r}
+credit.tr = credit.train
+credit.tr$default = as.factor(credit.tr$default)
+model_ab <- boosting(default~., data = credit.tr)
+#print(model_ab)
+
+abpred = predict.boosting(model_ab, newdata = credit.test)$class
+
+cm_ab = confusionMatrix(abpred, credit.test$default, positive = "2")
+
+sens_ab = cm_ab$byClass['Sensitivity']*100
+acc_ab = cm_ab$overall['Accuracy']*100
+```
+
+## Logistic Regression
+
+```{r}
+model_lm = glm(as.factor(default)~., data = credit.train, family = binomial(link = "logit"))
+#anova(model_lm,test = "Chisq")
+
+glmpred = predict(model_lm, credit.test, type = "response")
+glmprednew = ifelse(glmpred > 0.5, 2,1)
+
+cm_glm = confusionMatrix(glmprednew,credit.test$default, positive = "2")
+
+sens_glm = cm_glm$byClass['Sensitivity']*100
+acc_glm = cm_glm$overall['Accuracy']*100
+
+```
+
+## kNN
+
+```{r}
+
+dummy_obj = dummyVars(~., data = credit)
+
+credit.new = data.frame(predict(dummy_obj, newdata = credit))
+
+credit.ultra = normalize(credit.new, method = "range", range = c(0,1))
+
+inTrain = createDataPartition(credit.ultra$default, p = 0.75, list = F)
+
+credit.trainknn = credit.ultra[sample(seq(1, nrow(credit.ultra)),(0.7*nrow(credit.ultra))),]
+
+credit.testknn = credit.ultra[sample(seq(1,nrow(credit.ultra)),(0.3*nrow(credit.ultra))),]
+
+pred_knn = knn(credit.trainknn, credit.testknn, cl = as.factor(credit.trainknn$default), k = 1)
+
+cm = confusionMatrix(pred_knn, credit.testknn$default, positive = "1")
+
+sens_knn = cm$byClass['Sensitivity']*100
+
+acc_knn = cm$overall['Accuracy']*100
+
+
+```
+
+## Comparison
+
+```{r}
+modelName = c("DT","RF","Naive-Bayes","AdaBoost","Logistic Regression","kNN")
+Accuracy = data.frame(modelName, acc = round(c(acc_dt, acc_rf, acc_nb, acc_ab, acc_glm, acc_knn),2))
+sensitivity = data.frame(modelName, sens = round(c(sens_dt, sens_rf, sens_nb, sens_ab,sens_glm, sens_knn),2))
+
+
+Accuracy %>% 
+  ggplot(aes(x =reorder(modelName, -acc), y = acc)) + 
+  geom_bar(stat = "identity", fill = rainbow(6)) +
+  geom_text(aes(label = acc), vjust = -0.25) + 
+  theme(axis.title = element_blank(), axis.text.y = element_blank(),axis.ticks.y = element_blank()) + 
+  ggtitle("Accuracy of Models")
+
+sensitivity %>% 
+  ggplot(aes(x =reorder(modelName, -sens), y = sens)) + 
+  geom_bar(stat = "identity", fill = topo.colors(6)) +
+  geom_text(aes(label = sens), vjust = -0.25) +
+  theme(axis.title = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank()) + 
+  ggtitle("Sensitivity of Models")
+
+```
